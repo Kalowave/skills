@@ -268,10 +268,11 @@ _help_login() { cat <<'EOF'
 login - device-flow: hands-free setup via browser confirmation.
 
 Generates a one-time random seed, opens
-  https://clip.kalowave.com/api/users/open-api-key/device-flow/confirm?seed=<seed>
-in your browser. You must already be logged in to kaloclip.com in that
-browser — the server validates the session, derives your apiKey, and
-stashes it in Redis under the seed (TTL 10min).
+  https://clip.kalowave.com/cli-login?seed=<seed>
+in your browser. The page reads your login JWT from localStorage
+(kaloclip.com must be logged in on the same browser), and when you
+click Authorize it sends your apiKey back to the server under the seed
+(stashed in Redis, TTL 10min).
 
 Meanwhile the CLI polls
   /api/open/v1/device-flow/poll?seed=<seed>
@@ -395,15 +396,15 @@ case "$cmd" in
     else
       seed=$(head -c 32 /dev/urandom | base64 | tr '+/' '-_' | tr -d '=\n')
     fi
-    confirm_url="$host/api/users/open-api-key/device-flow/confirm?seed=$seed"
+    confirm_url="$host/cli-login?seed=$seed"
     poll_url="$host/api/open/v1/device-flow/poll?seed=$seed"
     cat <<EOF
 Opening the authorization page in your browser.
 
   $confirm_url
 
-You must be logged in to kaloclip.com in the same browser. Once the page
-shows "CLI authorized", this terminal will pick the key up automatically.
+You must be logged in to kaloclip.com in the same browser.
+Click "Authorize" on the page — this terminal will pick up the key automatically.
 EOF
     if command -v open >/dev/null 2>&1; then
       open "$confirm_url" >/dev/null 2>&1 || true
