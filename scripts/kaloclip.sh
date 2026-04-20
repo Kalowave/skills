@@ -3,20 +3,11 @@
 set -euo pipefail
 
 BASE="https://clip.kalowave.com/api/open/v1"
-# Home dir. Override with KALOCLIP_HOME (mirrors the HERMES_HOME / VIRTUAL_ENV pattern).
+# Home dir. Override with KALOCLIP_HOME (mirrors the HERMES_HOME pattern).
 CONFIG_DIR="${KALOCLIP_HOME:-$HOME/.kaloclip}"
 CONFIG_FILE="$CONFIG_DIR/config.env"
-LEGACY_CONFIG_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/kaloclip/config.env"
 
 load_config() {
-  # Migrate from the old XDG path (~/.config/kaloclip/config.env) to ~/.kaloclip/config.env.
-  if [ ! -f "$CONFIG_FILE" ] && [ -f "$LEGACY_CONFIG_FILE" ]; then
-    mkdir -p "$CONFIG_DIR" && chmod 700 "$CONFIG_DIR" 2>/dev/null || true
-    mv "$LEGACY_CONFIG_FILE" "$CONFIG_FILE"
-    chmod 600 "$CONFIG_FILE" 2>/dev/null || true
-    rmdir "$(dirname "$LEGACY_CONFIG_FILE")" 2>/dev/null || true
-    echo "Migrated legacy config to $CONFIG_FILE" >&2
-  fi
   [ -f "$CONFIG_FILE" ] && . "$CONFIG_FILE" || true
 }
 
