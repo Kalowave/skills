@@ -291,21 +291,28 @@ _help_flow() { cat <<'EOF'
 flow [flags] <image-url> [product-title]
   End-to-end demo: import → script → wait → video → wait.
 
-Flags (all optional; defaults in parens):
+Behaviour:
+  - No flags + TTY stdin → interactive wizard sourced from /videos/options
+    (only shows valid duration↔model and duration↔resolution combinations).
+  - Any flag passed OR non-TTY stdin → non-interactive; missing fields fall
+    back to defaults below.
+
+Flags (all optional; defaults in parens for non-interactive fallback):
   --duration N       8 | 12 | 15 | 20                            (12)
   --model ID         v31 | sr2l | sr2 | sd2f | sd2 | sr20        (sr2l)
   --aspect RATIO     RATIO_9_16 | RATIO_16_9                     (RATIO_9_16)
   --resolution RES   720P | 1080P | 4K                           (720P)
 
-Duration and model must agree; duration/resolution combos have server-side rules —
-run `videos-options` to see `rules.duration_model` and `rules.duration_resolution`
-for the canonical enum.
+duration+model and duration+resolution must agree (server enforces via
+rules.duration_model and rules.duration_resolution — run `videos-options`
+for the canonical table, or just use the wizard).
 
-Progress (step banners, state ticks, credits before/after) → stderr.
-Final JSON (scriptJobId, videoJobId, videoUrl, coverImageUrl, userAssetId,
-creditsSpent, script) → stdout.  Exit 0 on success, 1 on any failure.
+Progress (step banners, state ticks, credits before/after, final video URL
+banner) → stderr.  Machine-readable JSON (scriptJobId, videoJobId, videoUrl,
+coverImageUrl, userAssetId, creditsSpent, script) → stdout.
+Exit 0 on success, 1 on any failure.
 
-Example:
+Examples:
   ./scripts/kaloclip.sh flow https://picsum.photos/id/200/600/600.jpg "Fresh Croissant"
   ./scripts/kaloclip.sh flow --duration 8 --model v31 --resolution 1080P <url>
 EOF
@@ -544,18 +551,20 @@ EOF
 
   flow)
     require_key
-    # Parse optional flags before positionals. Defaults are the 12s/sr2l/720P combo
-    # (known-valid per /videos/options rules; see `help flow` for alternatives).
-    flow_duration=12
-    flow_model=sr2l
-    flow_aspect=RATIO_9_16
-    flow_resolution=720P
+    # Parse optional flags. If none of the four are provided AND stdin is a TTY,
+    # we walk an interactive wizard sourced from /videos/options so users can't
+    # pick an invalid duration/model/resolution combo.
+    flow_duration=""
+    flow_model=""
+    flow_aspect=""
+    flow_resolution=""
+    flow_flags_given=0
     while [ $# -gt 0 ]; do
       case "$1" in
-        --duration)   flow_duration="$2"; shift 2 ;;
-        --model)      flow_model="$2"; shift 2 ;;
-        --aspect)     flow_aspect="$2"; shift 2 ;;
-        --resolution) flow_resolution="$2"; shift 2 ;;
+        --duration)   flow_duration="$2"; flow_flags_given=1; shift 2 ;;
+        --model)      flow_model="$2"; flow_flags_given=1; shift 2 ;;
+        --aspect)     flow_aspect="$2"; flow_flags_given=1; shift 2 ;;
+        --resolution) flow_resolution="$2"; flow_flags_given=1; shift 2 ;;
         --help|-h)    _help_flow; exit 0 ;;
         --)           shift; break ;;
         -*)           echo "Unknown flag: $1 (see 'help flow')" >&2; exit 2 ;;
@@ -575,9 +584,82 @@ EOF
     credit_balance() {
       api "$BASE/credits" 2>/dev/null | jq -r '.data.totalRemain // empty'
     }
+    # Pick one item from a list. Writes the chosen value to stdout, banner
+    # and prompt to stderr. First arg: banner; rest: value1 label1 value2 label2 ...
+    prompt_pick() {
+      local banner="$1"; shift
+      echo "" >&2
+      echo "$banner" >&2
+      local i=1 values=() labels=()
+      while [ $# -gt 0 ]; do
+        values+=("$1"); labels+=("$2"); shift 2
+        echo "  $i) ${values[$((i-1))]}  — ${labels[$((i-1))]}" >&2
+        i=$((i+1))
+      done
+      local default_idx=1
+      local choice
+      printf '  Choice [1]: ' >&2
+      read -r choice < /dev/tty || choice=""
+      choice=${choice:-$default_idx}
+      case "$choice" in *[!0-9]*) choice=$default_idx ;; esac
+      if [ "$choice" -lt 1 ] || [ "$choice" -gt ${#values[@]} ]; then
+        choice=$default_idx
+      fi
+      printf '%s' "${values[$((choice-1))]}"
+    }
+
+    # Interactive wizard: only if NO flag was given and stdin is a TTY (piped
+    # runs fall through to defaults below).
+    if [ $flow_flags_given -eq 0 ] && [ -t 0 ]; then
+      echo ">>> Configuring video parameters (pass --duration/--model/--aspect/--resolution to skip this)" >&2
+      opts=$(api "$BASE/videos/options")
+      [ "$(printf '%s' "$opts" | jq -r '.success')" = "true" ] || { echo "Failed to fetch /videos/options: $opts" >&2; exit 1; }
+
+      # Duration
+      dur_args=()
+      while IFS=$'\t' read -r v lbl; do
+        dur_args+=("$v" "${lbl}s")
+      done < <(printf '%s' "$opts" | jq -r '.data.durationOptions[] | "\(.value)\t\(.value)"')
+      flow_duration=$(prompt_pick "Select duration:" "${dur_args[@]}")
+
+      # Model (only those valid for chosen duration)
+      model_args=()
+      while IFS=$'\t' read -r v lbl; do
+        model_args+=("$v" "$lbl")
+      done < <(printf '%s' "$opts" | jq -r --arg d "$flow_duration" \
+        '.data.modelOptions[] | select(.value as $mv | .data.rules.duration_model[$d]? // [] | index($mv)) | "\(.value)\t\(.label // .value)"' 2>/dev/null || true)
+      if [ ${#model_args[@]} -eq 0 ]; then
+        # Fallback: compute via rules map alone, no label
+        while IFS= read -r v; do
+          model_args+=("$v" "$v")
+        done < <(printf '%s' "$opts" | jq -r --arg d "$flow_duration" '.data.rules.duration_model[$d][]?')
+      fi
+      flow_model=$(prompt_pick "Select model for ${flow_duration}s:" "${model_args[@]}")
+
+      # Resolution (valid for chosen duration)
+      res_args=()
+      while IFS= read -r v; do
+        res_args+=("$v" "$v")
+      done < <(printf '%s' "$opts" | jq -r --arg d "$flow_duration" '.data.rules.duration_resolution[$d][]?')
+      flow_resolution=$(prompt_pick "Select resolution:" "${res_args[@]}")
+
+      # Aspect ratio
+      asp_args=()
+      while IFS=$'\t' read -r v lbl; do
+        asp_args+=("$v" "$lbl")
+      done < <(printf '%s' "$opts" | jq -r '.data.aspectRatioOptions[] | "\(.value)\t\(.label)"')
+      flow_aspect=$(prompt_pick "Select aspect ratio:" "${asp_args[@]}")
+    fi
+
+    # Fill any still-unset field with defaults (covers: partial flags, non-TTY).
+    flow_duration="${flow_duration:-12}"
+    flow_model="${flow_model:-sr2l}"
+    flow_aspect="${flow_aspect:-RATIO_9_16}"
+    flow_resolution="${flow_resolution:-720P}"
 
     credits_before=$(credit_balance)
     [ -n "$credits_before" ] && echo ">>> credits before: $credits_before" >&2
+    echo ">>> params: duration=${flow_duration}s  model=$flow_model  resolution=$flow_resolution  aspect=$flow_aspect" >&2
 
     section "1/4 import $flow_url"
     flow_body=$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1:]))' "$flow_url")
@@ -623,11 +705,22 @@ EOF
       echo ">>> credits after:  $credits_after  (spent $spent)" >&2
     fi
 
-    # Final summary to stdout; everything above is progress to stderr.
+    # Pull final URLs once so both the stderr banner and stdout JSON use them.
+    final_video_url=$(printf '%s' "$vfinal" | jq -r '.data.output.videoUrl // empty')
+    final_cover_url=$(printf '%s' "$vfinal" | jq -r '.data.output.coverImageUrl // empty')
+
+    # Prominent, human-friendly banner on stderr so the user doesn't have to grep
+    # the JSON to find the mp4 URL.
+    echo "" >&2
+    echo ">>> ✅ Video ready:" >&2
+    echo "    $final_video_url" >&2
+    [ -n "$final_cover_url" ] && echo "    cover: $final_cover_url" >&2
+
+    # Machine-readable summary to stdout (for pipes / scripts).
     jq -n \
       --argjson sjob "$sjob" --argjson vjob "$vjob" \
-      --arg vurl   "$(printf '%s' "$vfinal" | jq -r '.data.output.videoUrl')" \
-      --arg cover  "$(printf '%s' "$vfinal" | jq -r '.data.output.coverImageUrl')" \
+      --arg vurl   "$final_video_url" \
+      --arg cover  "$final_cover_url" \
       --argjson uaid "$(printf '%s' "$vfinal" | jq -r '.data.output.userAssetId')" \
       --arg script "$script" \
       --arg spent "${spent:-}" \
