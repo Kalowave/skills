@@ -35,8 +35,8 @@ USAGE
               script | job | wait | flow | all
 
 CONFIG
-  login                        open the API-key page in browser, paste+save
-  set-key <key>                save API key directly (if you already have it)
+  login                        browser-based device-flow: confirm once, key auto-saved
+  set-key <key>                save API key directly (non-interactive / no browser)
   show-config                  show masked key
   unset                        delete config
 
@@ -239,18 +239,24 @@ EOF
 }
 
 _help_login() { cat <<'EOF'
-login - interactive: open the API-key page in your browser, paste the key, save.
+login - device-flow: hands-free setup via browser confirmation.
 
-Opens https://clip.kalowave.com/api/users/open-api-key using the OS default
-browser (`open` on macOS, `xdg-open` on Linux). You must be logged in to
-kaloclip.com in that browser — the endpoint is session-authed and returns
-JSON with an `apiKey` field.
+Generates a one-time random seed, opens
+  https://clip.kalowave.com/api/users/open-api-key/device-flow/confirm?seed=<seed>
+in your browser. You must already be logged in to kaloclip.com in that
+browser — the server validates the session, derives your apiKey, and
+stashes it in Redis under the seed (TTL 10min).
 
-Paste the apiKey value at the prompt; it's written to
-$XDG_CONFIG_HOME/kaloclip/config.env (file 0600, dir 0700). Then a
-confirmation /credits call verifies the key is live.
+Meanwhile the CLI polls
+  /api/open/device-flow/poll?seed=<seed>
+every 2 seconds. First successful poll retrieves the apiKey; the server
+deletes the Redis entry on that same call (one-shot pickup). No copy-paste.
 
-For non-interactive setups use `set-key <key>` instead.
+On success the key is saved to $XDG_CONFIG_HOME/kaloclip/config.env
+(0600) and a /credits round-trip confirms it works.
+
+Timeout: 5 min (seed TTL is 10 min; CLI polls for 5 to cap wait).
+Non-interactive environments should use `set-key <key>` instead.
 EOF
 }
 
@@ -299,41 +305,72 @@ case "$cmd" in
     echo "API key saved to $CONFIG_FILE" ;;
 
   login)
-    key_url="https://clip.kalowave.com/api/users/open-api-key"
+    # CLI device-flow: generate seed -> open browser to confirm URL -> poll for pickup.
+    # Base host is the authority portion of $BASE (strip /api/open/v1).
+    host="${BASE%/api/*}"
+    # 32 bytes URL-safe base64 = 43 chars — well within the 16-128 server limit.
+    if command -v python3 >/dev/null 2>&1; then
+      seed=$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')
+    else
+      seed=$(head -c 32 /dev/urandom | base64 | tr '+/' '-_' | tr -d '=\n')
+    fi
+    confirm_url="$host/api/users/open-api-key/device-flow/confirm?seed=$seed"
+    poll_url="$host/api/open/device-flow/poll?seed=$seed"
     cat <<EOF
-Opening your API key page in a browser.
+Opening the authorization page in your browser.
 
-  URL: $key_url
+  $confirm_url
 
-You must be logged in to kaloclip.com in the same browser. The response is JSON —
-copy the value of the "apiKey" field (starts with "kc_") and paste it below.
+You must be logged in to kaloclip.com in the same browser. Once the page
+shows "CLI authorized", this terminal will pick the key up automatically.
 EOF
     if command -v open >/dev/null 2>&1; then
-      open "$key_url" >/dev/null 2>&1 || true
+      open "$confirm_url" >/dev/null 2>&1 || true
     elif command -v xdg-open >/dev/null 2>&1; then
-      xdg-open "$key_url" >/dev/null 2>&1 || true
+      xdg-open "$confirm_url" >/dev/null 2>&1 || true
     else
-      echo "(No 'open'/'xdg-open' command found — copy the URL above manually.)"
+      echo "(No 'open'/'xdg-open' — paste the URL above into your browser manually.)"
     fi
-    printf '\nPaste API key: '
-    IFS= read -r key
-    [ -n "$key" ] || { echo "No key entered, aborting." >&2; exit 1; }
-    case "$key" in
-      kc_*) ;;
-      *) echo "Warning: key doesn't start with 'kc_' — double-check you copied the apiKey value, not the whole JSON." >&2 ;;
-    esac
-    KALOCLIP_API_KEY="$key"; save_config
-    echo "API key saved to $CONFIG_FILE"
-    # Round-trip sanity check: call /credits to confirm the key actually works.
-    if load_config && [ -n "${KALOCLIP_API_KEY:-}" ]; then
-      resp=$(api "$BASE/credits" 2>/dev/null || true)
-      ok=$(printf '%s' "$resp" | jq -r '.success // empty' 2>/dev/null)
-      if [ "$ok" = "true" ]; then
-        echo "Key verified: $(printf '%s' "$resp" | jq -r '.data | "balance=\(.totalRemain)"')"
-      else
-        echo "Warning: key saved but /credits call did not succeed (response: $resp)" >&2
-      fi
-    fi
+    echo
+    # Poll every 2s for up to 5 min.
+    max_tries=150
+    for i in $(seq 1 $max_tries); do
+      presp=$(curl -sS "$poll_url" 2>/dev/null || echo '{}')
+      pstatus=$(printf '%s' "$presp" | jq -r '.data.status // empty' 2>/dev/null)
+      case "$pstatus" in
+        ready)
+          key=$(printf '%s' "$presp" | jq -r '.data.apiKey')
+          if [ -z "$key" ] || [ "$key" = "null" ]; then
+            echo "Error: poll reported ready but apiKey missing: $presp" >&2
+            exit 1
+          fi
+          KALOCLIP_API_KEY="$key"; save_config
+          echo "API key saved to $CONFIG_FILE"
+          # Round-trip sanity check.
+          vresp=$(api "$BASE/credits" 2>/dev/null || true)
+          vok=$(printf '%s' "$vresp" | jq -r '.success // empty' 2>/dev/null)
+          if [ "$vok" = "true" ]; then
+            echo "Key verified: $(printf '%s' "$vresp" | jq -r '.data | "balance=\(.totalRemain)"')"
+          else
+            echo "Warning: key saved but /credits call did not succeed (response: $vresp)" >&2
+          fi
+          exit 0
+          ;;
+        pending)
+          printf '\r  waiting for browser confirmation... (%ds)' "$((i * 2))"
+          ;;
+        *)
+          echo ""
+          echo "Unexpected poll response: $presp" >&2
+          exit 1
+          ;;
+      esac
+      sleep 2
+    done
+    echo ""
+    echo "Timed out after $((max_tries * 2))s waiting for browser confirmation." >&2
+    echo "If you confirmed too late, the seed expired (TTL 10 min). Rerun '$0 login'." >&2
+    exit 1
     ;;
 
   show-config)
