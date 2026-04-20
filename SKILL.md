@@ -12,7 +12,7 @@ AI-powered video generation. Use the bundled CLI (`scripts/kaloclip.sh`). `KALOC
 ```bash
 ./scripts/kaloclip.sh login                 # device-flow: opens a browser confirm page, key is
                                             # fetched and saved automatically (no copy/paste).
-                                            # Saved to ~/.config/kaloclip/config.env (0600).
+                                            # Saved to ~/.kaloclip/config.env (0600).
 ./scripts/kaloclip.sh set-key <api_key>     # non-interactive alternative (headless / no browser)
 ./scripts/kaloclip.sh show-config           # key is masked
 ./scripts/kaloclip.sh unset                 # delete config
