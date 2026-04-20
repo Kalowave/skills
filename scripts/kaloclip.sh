@@ -128,19 +128,30 @@ EOF
 _help_videos-options() { cat <<'EOF'
 videos-options - GET /videos/options                              rate: 30/min
 
-Response (.data): dynamic config with enums and rules.
+Response (.data): dynamic config — enums AND constraint rules.
+Everything here is authoritative and changes as models roll in / out; never
+cache values from this doc. Always read live before constructing a body.
 
-  aspectRatioOptions  [{label,value}]   value: RATIO_9_16 | RATIO_16_9
-  durationOptions     [{label,value,default?}]   value: 8 | 12 | 15 | 20
-  resolutionOptions   [{label,value}]   value: 720P | 1080P | 4K
-  quantityOptions     [{label,value}]   (only value=1 is accepted by /videos)
-  modelOptions        [{label,value,description}]
-                        values: v31 | sr2l | sr2 | sd2f | sd2 | sr20
-                        (this value goes into `internalModelId` on /videos|/scripts|/videos/preview)
-  rules.duration_model        { "8":[...], "12":[...], ... }
-  rules.duration_resolution   { "8":[...], "720P":[...], ... }
+Shape (actual values come back live):
+  aspectRatioOptions    [{label, value}]
+  durationOptions       [{label, value, default?}]
+  resolutionOptions     [{label, value}]
+  quantityOptions       [{label, value}]              # /videos currently only accepts 1
+  modelOptions          [{label, value, description}] # value → internalModelId
+  rules.duration_model       { "<duration>": [<modelId>, ...] }
+  rules.duration_resolution  { "<duration>": [<resolution>, ...], "<resolution>": [<duration>, ...] }
 
-Fetch this endpoint first to discover valid (duration, resolution, model) combos.
+Typical pre-flight:
+  ./scripts/kaloclip.sh videos-options | jq '.data | {
+    durations: [.durationOptions[].value],
+    models:    [.modelOptions[].value],
+    resolutions: [.resolutionOptions[].value],
+    aspects:   [.aspectRatioOptions[].value],
+    rules
+  }'
+
+Pick duration first, then filter model by rules.duration_model[<duration>]
+and resolution by rules.duration_resolution[<duration>].
 EOF
 }
 
@@ -161,23 +172,22 @@ Returns credit cost (number in .data); no deduction.
 
 Body:
   REQUIRED
-    duration         int     8 | 12 | 15 | 20
-    resolution       string  720P | 1080P | 4K
-    aspectRatio      string  RATIO_9_16 | RATIO_16_9
+    duration         int     see rules below
+    resolution       string  see rules below
+    aspectRatio      string  one of `.data.aspectRatioOptions[].value`
     quantity         int     must be 1
-    internalModelId  string  see duration→model table below
+    internalModelId  string  one of `.data.modelOptions[].value`
 
-Valid (duration, model) combos per videos-options.rules.duration_model:
-    duration=8    →  v31
-    duration=12   →  sr2l
-    duration=15   →  sr2 | sd2f | sd2
-    duration=20   →  sr20
+Fetch the authoritative enums + valid combinations live before submitting:
+  ./scripts/kaloclip.sh videos-options | jq '.data | {
+    durationOptions, modelOptions, resolutionOptions, aspectRatioOptions,
+    rules
+  }'
 
-Valid (duration, resolution) combos per rules.duration_resolution:
-    duration=8    →  1080P | 4K
-    duration=12   →  720P  | 1080P
-    duration=15   →  720P  | 1080P
-    duration=20   →  720P  | 1080P
+Key constraints:
+  - `.data.rules.duration_model[<duration>]`      → valid model IDs
+  - `.data.rules.duration_resolution[<duration>]` → valid resolutions
+  - `.data.rules.duration_resolution[<resolution>]` → valid durations (inverse)
 
 Invalid combos surface as 400 VALIDATION_FAILED with field-level detail.
 EOF
@@ -196,30 +206,24 @@ Body:
   REQUIRED
     imageInfos       ImageInfo[]  1-6 (from upload/import)
     productTitle     string
-    duration         int     8 | 12 | 15 | 20
-    aspectRatio      string  RATIO_9_16 | RATIO_16_9
-    resolution       string  720P | 1080P | 4K
+    duration         int     see /videos/options .data.rules
+    aspectRatio      string  one of `.data.aspectRatioOptions[].value`
+    resolution       string  see /videos/options .data.rules
     quantity         int     must be 1
-    internalModelId  string  see duration→model table below
+    internalModelId  string  one of `.data.modelOptions[].value`
   OPTIONAL
     originScript, userModifiedScript, language (default en),
     categoryNames, sellingPoints, creationDescription (<= 300),
     requestId (script jobId, auto-fills script),
     productId, country, sellingCountry
 
-Valid (duration, model) per videos-options.rules.duration_model:
-    duration=8    →  v31
-    duration=12   →  sr2l
-    duration=15   →  sr2 | sd2f | sd2
-    duration=20   →  sr20
-
-Valid (duration, resolution) per rules.duration_resolution:
-    duration=8    →  1080P | 4K
-    duration=12   →  720P  | 1080P
-    duration=15   →  720P  | 1080P
-    duration=20   →  720P  | 1080P
-
-Invalid combos surface as 400 VALIDATION_FAILED with field-level detail.
+Valid (duration, model) and (duration, resolution) combos are dynamic and
+served by GET /api/open/v1/videos/options. Fetch before constructing the body:
+  ./scripts/kaloclip.sh videos-options | jq '.data.rules'
+Key lookups:
+  .duration_model[<duration>]        → valid model IDs for that duration
+  .duration_resolution[<duration>]   → valid resolutions for that duration
+Invalid combos → 400 VALIDATION_FAILED with field-level detail.
 
   ImageInfo: { "assetId": number, "imageUrl": string, "description"?: string }
 EOF
@@ -237,8 +241,9 @@ Body:
     productTitle     string
     categoryNames    string[]
     language         string    en, zh, ...
-    duration         int       8 | 12 | 15 | 20
-    internalModelId  string    see duration→model table below
+    duration         int       see /videos/options .data.durationOptions
+    internalModelId  string    see /videos/options .data.modelOptions
+                               (must satisfy rules.duration_model[<duration>])
   OPTIONAL
     sellingPoints         string[]
     creationDescription   string   <= 300 chars
@@ -246,11 +251,8 @@ Body:
     productLink           string
     sellingCountry        string
 
-Valid (duration, model) per videos-options.rules.duration_model:
-    duration=8    →  v31
-    duration=12   →  sr2l
-    duration=15   →  sr2 | sd2f | sd2
-    duration=20   →  sr20
+Enums and (duration, model) pairings are dynamic — fetch live:
+  ./scripts/kaloclip.sh videos-options | jq '.data | {durationOptions, modelOptions, rules}'
 
   ImageInfo: { "assetId": number, "imageUrl": string, "description"?: string }
 EOF
