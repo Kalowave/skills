@@ -34,7 +34,25 @@ cd skills/kaloclip
 
 Routes natural-language questions about TikTok Shop data (products, shops, creators, videos, livestreams, categories) through the KaloPilot AI agent. Covers all TikTok Shop regions (US, UK, ID, TH, VN, PH, MY, SG, MX, BR, JP, …). See [`kalopilot/SKILL.md`](kalopilot/SKILL.md) and the deep-dives under [`kalopilot/references/`](kalopilot/references/).
 
-Uses a KaloData token stored at `~/.kalopilot/token`. The skill's CLI (`kalopilot/scripts/pilot.sh`) handles the token plumbing.
+Install:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Kalowave/skills/main/kalopilot/install.sh | bash
+```
+
+Then save your KaloData token once (the installer prints this at the end):
+
+```bash
+mkdir -p ~/.kalopilot && echo -n 'YOUR_TOKEN' > ~/.kalopilot/token && chmod 600 ~/.kalopilot/token
+```
+
+Usage:
+
+```bash
+kalopilot query '美国热门商品有哪些？'
+kalopilot status      # poll while running (1–10 min depending on complexity)
+kalopilot result      # fetch the answer
+```
 
 Upstream: [sailtonight/kalopilot-skill](https://github.com/sailtonight/kalopilot-skill) (MIT).
 
@@ -51,6 +69,7 @@ skills/
 │   ├── SKILL.md              # agent contract
 │   ├── README.md
 │   ├── LICENSE               # MIT (upstream)
+│   ├── install.sh            # one-liner installer
 │   ├── scripts/pilot.sh      # the CLI
 │   └── references/           # per-topic deep-dives (products, shops, …)
 └── <future skills>/
