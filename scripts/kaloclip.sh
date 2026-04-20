@@ -75,7 +75,8 @@ ACTION
   preview                      POST /videos/preview  credit cost   (JSON on stdin)
   video                        POST /videos   credits deducted    (JSON on stdin)
   wait <jobId> [interval_s]    poll until COMPLETED/FAILED (default 5s)
-  flow [flags] <url> [title]   end-to-end (see `help flow` for --duration/--model/...)
+  flow [flags] <url-or-file> [title]
+                               end-to-end (URL or local file; see `help flow`)
 
 All responses wrapped: { success, code, message, data, cached }.  Check .success first.
 Env: KALOCLIP_API_KEY overrides saved file.  KALOCLIP_HOME overrides ~/.kaloclip.
@@ -288,14 +289,23 @@ EOF
 }
 
 _help_flow() { cat <<'EOF'
-flow [flags] <image-url> [product-title]
-  End-to-end demo: import → script → wait → video → wait.
+flow [flags] <image-url-or-file> [product-title]
+  End-to-end demo: import/upload → script → wait → video → wait.
+
+Image source can be either:
+  - https:// or http:// URL     → sent via POST /images/import
+  - local file path              → sent via POST /images (multipart)
 
 Behaviour:
-  - No flags + TTY stdin → interactive wizard sourced from /videos/options
+  - No image arg + TTY stdin   → prompt you for the source (URL or file path).
+  - No image arg + non-TTY     → error out with usage.
+  - No flags + TTY stdin       → interactive wizard sourced from /videos/options
     (only shows valid duration↔model and duration↔resolution combinations).
-  - Any flag passed OR non-TTY stdin → non-interactive; missing fields fall
-    back to defaults below.
+  - Any flag passed OR non-TTY → non-interactive; missing fields fall back to
+    defaults below.
+
+After the script step completes, the full generated script is echoed to stderr
+so you can read it before the video step kicks off.
 
 Flags (all optional; defaults in parens for non-interactive fallback):
   --duration N       8 | 12 | 15 | 20                            (12)
@@ -571,9 +581,40 @@ EOF
         *)            break ;;
       esac
     done
-    [ $# -ge 1 ] || { echo "usage: $0 flow [--duration N] [--model ID] [--aspect RATIO] [--resolution RES] <image-url> [product-title]" >&2; exit 2; }
-    flow_url="$1"
+    # Prompt for image source if no positional was given and stdin is a TTY.
+    # Accepts either an https URL (→ /images/import) or a local file path (→ /images upload).
+    if [ $# -lt 1 ]; then
+      if [ -t 0 ]; then
+        echo "" >&2
+        echo ">>> Image source (URL https://... or local file path):" >&2
+        flow_source_input=""
+        while [ -z "$flow_source_input" ]; do
+          printf '  > ' >&2
+          read -r flow_source_input < /dev/tty || break
+        done
+        [ -n "$flow_source_input" ] || { echo "No image source provided, aborting." >&2; exit 1; }
+        set -- "$flow_source_input"
+      else
+        echo "usage: $0 flow [--duration N] [--model ID] [--aspect RATIO] [--resolution RES] <image-url-or-file> [product-title]" >&2
+        exit 2
+      fi
+    fi
+    flow_source="$1"
     flow_title="${2:-Test Product}"
+
+    # Classify the source and validate upfront so we don't waste an API call.
+    case "$flow_source" in
+      http://*|https://*)
+        flow_kind=url ;;
+      *)
+        if [ -f "$flow_source" ]; then
+          flow_kind=file
+        else
+          echo "Error: '$flow_source' is not an http(s) URL and not an existing file." >&2
+          exit 1
+        fi
+        ;;
+    esac
     check_ok() {
       local resp="$1" step="$2"
       [ "$(printf '%s' "$resp" | jq -r '.success')" = "true" ] && return 0
@@ -661,10 +702,15 @@ EOF
     [ -n "$credits_before" ] && echo ">>> credits before: $credits_before" >&2
     echo ">>> params: duration=${flow_duration}s  model=$flow_model  resolution=$flow_resolution  aspect=$flow_aspect" >&2
 
-    section "1/4 import $flow_url"
-    flow_body=$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1:]))' "$flow_url")
-    imp=$(api -X POST "$BASE/images/import" -H "Content-Type: application/json" -d "$flow_body")
-    check_ok "$imp" "import"
+    if [ "$flow_kind" = "url" ]; then
+      section "1/4 import $flow_source"
+      flow_body=$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1:]))' "$flow_source")
+      imp=$(api -X POST "$BASE/images/import" -H "Content-Type: application/json" -d "$flow_body")
+    else
+      section "1/4 upload $flow_source"
+      imp=$(api -X POST "$BASE/images" -F "images=@$flow_source")
+    fi
+    check_ok "$imp" "$flow_kind"
     aid=$(printf '%s' "$imp" | jq -r '.data[0].assetId')
     iurl=$(printf '%s' "$imp" | jq -r '.data[0].imageUrl')
     echo "  assetId=$aid" >&2
@@ -684,6 +730,12 @@ EOF
     sfinal=$("$0" wait "$sjob" 8) || { echo "script job failed:" >&2; printf '%s\n' "$sfinal" >&2; exit 1; }
     script=$(printf '%s' "$sfinal" | jq -r '.data.output.script')
     echo "  script length=${#script} chars" >&2
+    # Echo the full generated script to stderr so the user can read it before the
+    # video step kicks off (and have a chance to Ctrl-C if it's not what they wanted).
+    echo "" >&2
+    echo "─── generated script ───────────────────────────────────" >&2
+    printf '%s\n' "$script" >&2
+    echo "────────────────────────────────────────────────────────" >&2
 
     section "4/4 submit video (same duration/model) with generated script"
     vbody=$(jq -nc \
