@@ -6,9 +6,27 @@ BASE="https://clip.kalowave.com/api/open/v1"
 # Home dir. Override with KALOCLIP_HOME.
 CONFIG_DIR="${KALOCLIP_HOME:-$HOME/.kaloclip}"
 CONFIG_FILE="$CONFIG_DIR/config.env"
+# Max wall-clock seconds for `wait` (and by extension `flow`). Override per-call
+# with the 3rd arg to `wait`, or globally via KALOCLIP_WAIT_TIMEOUT.
+WAIT_TIMEOUT_DEFAULT="${KALOCLIP_WAIT_TIMEOUT:-900}"
+
+# Upfront dependency check. Fail fast with a clear message rather than a
+# mysterious `set -e` exit the first time curl/jq gets shelled out.
+for _dep in curl jq; do
+  command -v "$_dep" >/dev/null 2>&1 || {
+    echo "Error: '$_dep' is required but not found in PATH." >&2
+    exit 1
+  }
+done
+unset _dep
 
 load_config() {
+  # Env var takes precedence: if KALOCLIP_API_KEY is already set in the
+  # environment, don't let sourcing the saved file clobber it.
+  local _env_key="${KALOCLIP_API_KEY:-}"
   [ -f "$CONFIG_FILE" ] && . "$CONFIG_FILE" || true
+  [ -n "$_env_key" ] && KALOCLIP_API_KEY="$_env_key"
+  return 0
 }
 
 save_config() {
@@ -232,10 +250,15 @@ EOF
 }
 
 _help_wait() { cat <<'EOF'
-wait <jobId> [interval_s] - poll /jobs/{jobId} until COMPLETED or FAILED (default 5s).
+wait <jobId> [interval_s] [max_wait_s]
+  poll /jobs/{jobId} until COMPLETED / FAILED / timeout.
 
-Tick lines go to stderr; the final full response JSON goes to stdout.
-Exit code: 0 on COMPLETED, 1 on FAILED or after 5 consecutive transient errors.
+  interval_s    seconds between polls (default 5)
+  max_wait_s    wall-clock timeout (default 900; override globally with
+                KALOCLIP_WAIT_TIMEOUT env var)
+
+Tick lines go to stderr with elapsed seconds; the final full response JSON goes
+to stdout.  Exit code: 0 COMPLETED, 1 FAILED / timeout / 5+ transient errors.
 EOF
 }
 
@@ -420,12 +443,19 @@ EOF
 
   wait)
     require_key
-    [ $# -ge 1 ] || { echo "usage: $0 wait <jobId> [interval_s]" >&2; exit 2; }
-    jobId="$1"; interval="${2:-5}"
+    [ $# -ge 1 ] || { echo "usage: $0 wait <jobId> [interval_s] [max_wait_s]" >&2; exit 2; }
+    jobId="$1"; interval="${2:-5}"; max_wait="${3:-$WAIT_TIMEOUT_DEFAULT}"
     case "$jobId" in ''|*[!0-9]*) echo "Error: jobId must be a positive integer, got '$jobId'" >&2; exit 2 ;; esac
     transient=0
     final_rc=0
+    start_ts=$(date +%s)
     while :; do
+      now_ts=$(date +%s)
+      elapsed=$((now_ts - start_ts))
+      if [ "$elapsed" -ge "$max_wait" ]; then
+        echo "Timeout: job $jobId not terminal after ${elapsed}s (max=${max_wait}s). Last state=${state:-?}." >&2
+        exit 1
+      fi
       resp=$(api "$BASE/jobs/$jobId")
       state=$(printf '%s' "$resp" | jq -r '.data.state // empty')
       code=$(printf  '%s' "$resp" | jq -r '.code // empty')
@@ -433,7 +463,7 @@ EOF
       if [ -n "$state" ]; then
         transient=0
         # Ticks go to stderr so stdout carries only the final response JSON.
-        echo "[$(date +%H:%M:%S)] state=$state" >&2
+        echo "[$(date +%H:%M:%S)] state=$state (${elapsed}s)" >&2
         # API returns either uppercase (COMPLETED/FAILED) or lowercase (completed/failed).
         upper=$(printf '%s' "$state" | tr '[:lower:]' '[:upper:]')
         case "$upper" in
@@ -470,6 +500,12 @@ EOF
       exit 1
     }
     section() { printf '\n>>> %s\n' "$1" >&2; }
+    credit_balance() {
+      api "$BASE/credits" 2>/dev/null | jq -r '.data.totalRemain // empty'
+    }
+
+    credits_before=$(credit_balance)
+    [ -n "$credits_before" ] && echo ">>> credits before: $credits_before" >&2
 
     section "1/4 import $flow_url"
     flow_body=$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1:]))' "$flow_url")
@@ -509,6 +545,12 @@ EOF
     section "waiting for video completion (~2 min)"
     vfinal=$("$0" wait "$vjob" 12) || { echo "video job failed:" >&2; printf '%s\n' "$vfinal" >&2; exit 1; }
 
+    credits_after=$(credit_balance)
+    if [ -n "$credits_before" ] && [ -n "$credits_after" ]; then
+      spent=$(awk -v a="$credits_before" -v b="$credits_after" 'BEGIN{printf "%.1f", a-b}')
+      echo ">>> credits after:  $credits_after  (spent $spent)" >&2
+    fi
+
     # Final summary to stdout; everything above is progress to stderr.
     jq -n \
       --argjson sjob "$sjob" --argjson vjob "$vjob" \
@@ -516,7 +558,8 @@ EOF
       --arg cover  "$(printf '%s' "$vfinal" | jq -r '.data.output.coverImageUrl')" \
       --argjson uaid "$(printf '%s' "$vfinal" | jq -r '.data.output.userAssetId')" \
       --arg script "$script" \
-      '{scriptJobId:$sjob, videoJobId:$vjob, videoUrl:$vurl, coverImageUrl:$cover, userAssetId:$uaid, script:$script}'
+      --arg spent "${spent:-}" \
+      '{scriptJobId:$sjob, videoJobId:$vjob, videoUrl:$vurl, coverImageUrl:$cover, userAssetId:$uaid, creditsSpent:($spent|tonumber? // null), script:$script}'
     ;;
 
   *) echo "Unknown command: $cmd" >&2; usage >&2; exit 2 ;;

@@ -1,6 +1,6 @@
 ---
 name: kaloclip
-description: KaloClip Open API — upload images, generate video scripts, create videos, poll jobs, check credits via the bundled CLI (scripts/kaloclip.sh). Use when user asks to upload images, generate a script/video, poll a job, check credit balance, preview credit cost, authenticate with X-API-Key, set/save the KaloClip API key, call /api/open/v1/ endpoints, or debug Open API errors. Triggers on "kaloclip", "Open API", "KaloClip API", "X-API-Key", "开放接口", "上传图片", "生成视频", "查积分", "视频创作API", "设置apikey", "set apikey".
+description: KaloClip Open API CLI — upload/import images, generate scripts, create videos, poll jobs, check credits via /api/open/v1. Use when the user wants to call KaloClip Open API, set up an X-API-Key, or debug its errors. Triggers on "kaloclip", "KaloClip", "Open API" + KaloClip context, "X-API-Key", "视频创作API", "开放接口", "上传图片", "生成视频", "查积分".
 ---
 
 # KaloClip Open API
