@@ -3,7 +3,7 @@
 set -euo pipefail
 
 BASE="https://clip.kalowave.com/api/open/v1"
-# Home dir. Override with KALOCLIP_HOME (mirrors the HERMES_HOME pattern).
+# Home dir. Override with KALOCLIP_HOME.
 CONFIG_DIR="${KALOCLIP_HOME:-$HOME/.kaloclip}"
 CONFIG_FILE="$CONFIG_DIR/config.env"
 
