@@ -54,8 +54,6 @@ kalopilot status      # poll while running (1–10 min depending on complexity)
 kalopilot result      # fetch the answer
 ```
 
-Upstream: [sailtonight/kalopilot-skill](https://github.com/sailtonight/kalopilot-skill) (MIT).
-
 ## Layout
 
 ```
