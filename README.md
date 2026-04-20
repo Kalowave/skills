@@ -1,38 +1,45 @@
 # Kalowave skills
 
-Reusable agent skills for Kalowave products.
+Agent skills for Kalowave products. One directory per skill, each self-contained with its own `SKILL.md`, CLI, and install script.
 
-## kaloclip
+## Skills
 
-CLI wrapper + schema reference for the KaloClip Open API. See [SKILL.md](SKILL.md) for the agent-facing contract.
+### [`kaloclip/`](kaloclip/) — KaloClip Open API
 
-### Install
+CLI wrapper + schema reference for the KaloClip Open API (image upload, script generation, video creation, job polling). See [`kaloclip/SKILL.md`](kaloclip/SKILL.md) for the agent-facing contract.
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/Kalowave/skills/main/install.sh | bash
-```
-
-Downloads a single self-contained shell script to `~/.local/bin/kaloclip`. Requires `bash`, `curl`, `jq` (install hint printed if missing). To install somewhere else: `KALOCLIP_INSTALL_DIR=/usr/local/bin curl ... | bash`.
-
-### First run
+Install the standalone CLI:
 
 ```bash
-kaloclip login               # one-time: browser confirms, API key auto-saved to ~/.kaloclip/config.env
-kaloclip help                # command list + topic list
-kaloclip help <topic>        # per-endpoint body schema + live-fetch pointers
+curl -fsSL https://raw.githubusercontent.com/Kalowave/skills/main/kaloclip/install.sh | bash
 ```
 
-### Uninstall
+Quick start after install:
 
 ```bash
-rm ~/.local/bin/kaloclip
-rm -rf ~/.kaloclip           # removes the saved API key too
+kaloclip login               # browser device-flow: key auto-saved to ~/.kaloclip/config.env
+kaloclip help                # command + topic list
+kaloclip resolve <product-link>   # preferred entry point for TikTok / Kalodata URLs
 ```
 
-### For contributors (dev clone)
+Dev clone (for contributors):
 
 ```bash
 git clone https://github.com/Kalowave/skills.git
-cd skills
-./scripts/kaloclip.sh install    # symlinks into ~/.local/bin for in-place editing
+cd skills/kaloclip
+./scripts/kaloclip.sh install    # symlink into ~/.local/bin for in-place editing
+```
+
+### `kalopilot/` — coming soon
+
+## Layout
+
+```
+skills/
+├── README.md                 # this file — repo-level index
+├── kaloclip/
+│   ├── SKILL.md              # agent contract
+│   ├── install.sh            # one-liner installer
+│   └── scripts/kaloclip.sh   # the CLI
+└── <future skills>/
 ```
