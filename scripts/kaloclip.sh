@@ -274,7 +274,7 @@ browser — the server validates the session, derives your apiKey, and
 stashes it in Redis under the seed (TTL 10min).
 
 Meanwhile the CLI polls
-  /api/open/device-flow/poll?seed=<seed>
+  /api/open/v1/device-flow/poll?seed=<seed>
 every 2 seconds. First successful poll retrieves the apiKey; the server
 deletes the Redis entry on that same call (one-shot pickup). No copy-paste.
 
@@ -396,7 +396,7 @@ case "$cmd" in
       seed=$(head -c 32 /dev/urandom | base64 | tr '+/' '-_' | tr -d '=\n')
     fi
     confirm_url="$host/api/users/open-api-key/device-flow/confirm?seed=$seed"
-    poll_url="$host/api/open/device-flow/poll?seed=$seed"
+    poll_url="$host/api/open/v1/device-flow/poll?seed=$seed"
     cat <<EOF
 Opening the authorization page in your browser.
 
