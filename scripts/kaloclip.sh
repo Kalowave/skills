@@ -30,12 +30,13 @@ kaloclip - KaloClip Open API CLI
 USAGE
   kaloclip.sh <command> [args...]
   kaloclip.sh help [topic]
-      topics: credits | images-options | upload | import |
+      topics: login | credits | images-options | upload | import |
               videos-options | videos-queue | preview | video |
-              script | job | wait | all
+              script | job | wait | flow | all
 
 CONFIG
-  set-key <key>                save API key (file: $XDG_CONFIG_HOME/kaloclip/config.env)
+  login                        open the API-key page in browser, paste+save
+  set-key <key>                save API key directly (if you already have it)
   show-config                  show masked key
   unset                        delete config
 
@@ -237,6 +238,22 @@ Exit code: 0 on COMPLETED, 1 on FAILED or after 5 consecutive transient errors.
 EOF
 }
 
+_help_login() { cat <<'EOF'
+login - interactive: open the API-key page in your browser, paste the key, save.
+
+Opens https://clip.kalowave.com/api/users/open-api-key using the OS default
+browser (`open` on macOS, `xdg-open` on Linux). You must be logged in to
+kaloclip.com in that browser — the endpoint is session-authed and returns
+JSON with an `apiKey` field.
+
+Paste the apiKey value at the prompt; it's written to
+$XDG_CONFIG_HOME/kaloclip/config.env (file 0600, dir 0700). Then a
+confirmation /credits call verifies the key is live.
+
+For non-interactive setups use `set-key <key>` instead.
+EOF
+}
+
 _help_flow() { cat <<'EOF'
 flow <image-url> [product-title] - end-to-end demo: import → script → wait → video → wait
 
@@ -259,14 +276,14 @@ help_topic() {
   case "$t" in
     "") usage ;;
     all)
-      for sub in credits images-options upload import videos-options videos-queue preview video script job wait flow; do
+      for sub in login credits images-options upload import videos-options videos-queue preview video script job wait flow; do
         "_help_$sub"; echo
       done ;;
-    credits|images-options|upload|import|videos-options|videos-queue|preview|video|script|job|wait|flow)
+    login|credits|images-options|upload|import|videos-options|videos-queue|preview|video|script|job|wait|flow)
       "_help_$t" ;;
     *)
       echo "Unknown help topic: $t" >&2
-      echo "Topics: credits images-options upload import videos-options videos-queue preview video script job wait flow all" >&2
+      echo "Topics: login credits images-options upload import videos-options videos-queue preview video script job wait flow all" >&2
       exit 2 ;;
   esac
 }
@@ -277,9 +294,47 @@ case "$cmd" in
   help|--help|-h) help_topic "${1:-}" ;;
 
   set-key)
-    [ $# -ge 1 ] || { echo "usage: $0 set-key <api_key>" >&2; exit 2; }
+    [ $# -ge 1 ] || { echo "usage: $0 set-key <api_key>  (or run '$0 login' for guided setup)" >&2; exit 2; }
     KALOCLIP_API_KEY="$1"; save_config
     echo "API key saved to $CONFIG_FILE" ;;
+
+  login)
+    key_url="https://clip.kalowave.com/api/users/open-api-key"
+    cat <<EOF
+Opening your API key page in a browser.
+
+  URL: $key_url
+
+You must be logged in to kaloclip.com in the same browser. The response is JSON —
+copy the value of the "apiKey" field (starts with "kc_") and paste it below.
+EOF
+    if command -v open >/dev/null 2>&1; then
+      open "$key_url" >/dev/null 2>&1 || true
+    elif command -v xdg-open >/dev/null 2>&1; then
+      xdg-open "$key_url" >/dev/null 2>&1 || true
+    else
+      echo "(No 'open'/'xdg-open' command found — copy the URL above manually.)"
+    fi
+    printf '\nPaste API key: '
+    IFS= read -r key
+    [ -n "$key" ] || { echo "No key entered, aborting." >&2; exit 1; }
+    case "$key" in
+      kc_*) ;;
+      *) echo "Warning: key doesn't start with 'kc_' — double-check you copied the apiKey value, not the whole JSON." >&2 ;;
+    esac
+    KALOCLIP_API_KEY="$key"; save_config
+    echo "API key saved to $CONFIG_FILE"
+    # Round-trip sanity check: call /credits to confirm the key actually works.
+    if load_config && [ -n "${KALOCLIP_API_KEY:-}" ]; then
+      resp=$(api "$BASE/credits" 2>/dev/null || true)
+      ok=$(printf '%s' "$resp" | jq -r '.success // empty' 2>/dev/null)
+      if [ "$ok" = "true" ]; then
+        echo "Key verified: $(printf '%s' "$resp" | jq -r '.data | "balance=\(.totalRemain)"')"
+      else
+        echo "Warning: key saved but /credits call did not succeed (response: $resp)" >&2
+      fi
+    fi
+    ;;
 
   show-config)
     load_config

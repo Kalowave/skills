@@ -10,7 +10,10 @@ AI-powered video generation. Use the bundled CLI (`scripts/kaloclip.sh`). `KALOC
 ## CLI (`scripts/kaloclip.sh`)
 
 ```bash
-./scripts/kaloclip.sh set-key <api_key>     # saved to ~/.config/kaloclip/config.env (0600)
+./scripts/kaloclip.sh login                 # opens https://clip.kalowave.com/api/users/open-api-key,
+                                            # you copy the apiKey value, paste at the prompt; saved
+                                            # to ~/.config/kaloclip/config.env (0600)
+./scripts/kaloclip.sh set-key <api_key>     # non-interactive alternative if you already have the key
 ./scripts/kaloclip.sh show-config           # key is masked
 ./scripts/kaloclip.sh unset                 # delete config
 
@@ -35,7 +38,7 @@ AI-powered video generation. Use the bundled CLI (`scripts/kaloclip.sh`). `KALOC
 
 ### Agent guidance
 
-1. Run `show-config`. If key is `<unset>`, ask user for it and `set-key`. Never echo the raw key.
+1. Run `show-config`. If key is `<unset>`, prefer `login` (opens the key page for the user and reads the pasted key). Fall back to asking for the key and running `set-key` only if `login` is inappropriate (non-interactive environment, or user already has the key at hand). Never echo the raw key.
 2. Before `script` / `preview` / `video`, run `help <topic>` to confirm the schema.
 3. For async endpoints (`script`, `video`), capture the returned jobId and use `wait`. `state` comes back lowercase (`processing` / `completed` / `failed`); `wait` matches case-insensitively, exits 0 on `completed` and 1 on `failed`. Submit errors land in the outer envelope (`success:false`), so guard `wait` calls behind a numeric-jobId check.
 4. Responses are wrapped `{success, code, message, data, cached}` — always check `.success` first; pipe through `jq '.data'` for payload.
