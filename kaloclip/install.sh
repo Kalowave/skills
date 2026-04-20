@@ -2,7 +2,7 @@
 # Install the kaloclip CLI from https://github.com/Kalowave/skills.
 #
 # One-liner:
-#   curl -fsSL https://raw.githubusercontent.com/Kalowave/skills/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/Kalowave/skills/main/kaloclip/install.sh | bash
 #
 # Env overrides (optional):
 #   KALOCLIP_REPO          default: Kalowave/skills
@@ -14,7 +14,7 @@ set -euo pipefail
 REPO="${KALOCLIP_REPO:-Kalowave/skills}"
 REF="${KALOCLIP_REF:-main}"
 TARGET_DIR="${KALOCLIP_INSTALL_DIR:-$HOME/.local/bin}"
-SOURCE_URL="https://raw.githubusercontent.com/${REPO}/${REF}/scripts/kaloclip.sh"
+SOURCE_URL="https://raw.githubusercontent.com/${REPO}/${REF}/kaloclip/scripts/kaloclip.sh"
 
 say() { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31mError:\033[0m %s\n' "$*" >&2; exit 1; }
