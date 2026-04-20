@@ -49,7 +49,7 @@ kaloclip - KaloClip Open API CLI
 USAGE
   kaloclip.sh <command> [args...]
   kaloclip.sh help [topic]
-      topics: login | credits | images-options | upload | import |
+      topics: login | install | credits | images-options | upload | import |
               videos-options | videos-queue | preview | video |
               script | job | wait | flow | all
 
@@ -58,6 +58,8 @@ CONFIG
   set-key <key>                save API key directly (non-interactive / no browser)
   show-config                  show masked key
   unset                        delete config
+  install [target-dir]         symlink `kaloclip` into target-dir (default ~/.local/bin)
+  uninstall [target-dir]       remove the symlink
 
 QUERY
   credits                      balance
@@ -73,7 +75,7 @@ ACTION
   preview                      POST /videos/preview  credit cost   (JSON on stdin)
   video                        POST /videos   credits deducted    (JSON on stdin)
   wait <jobId> [interval_s]    poll until COMPLETED/FAILED (default 5s)
-  flow <image-url> [title]     end-to-end: import → script → video → videoUrl
+  flow [flags] <url> [title]   end-to-end (see `help flow` for --duration/--model/...)
 
 All responses wrapped: { success, code, message, data, cached }.  Check .success first.
 Env: KALOCLIP_API_KEY overrides saved file.  KALOCLIP_HOME overrides ~/.kaloclip.
@@ -285,19 +287,43 @@ EOF
 }
 
 _help_flow() { cat <<'EOF'
-flow <image-url> [product-title] - end-to-end demo: import → script → wait → video → wait
+flow [flags] <image-url> [product-title]
+  End-to-end demo: import → script → wait → video → wait.
 
-Runs the full happy path with opinionated defaults (duration=12s, model=sr2l,
-aspectRatio=RATIO_9_16, resolution=720P, quantity=1, language=en,
-categoryNames=["General"]). Import is free; script costs 2 credits; video
-costs the credits shown by `preview` (~10 for this combo).
+Flags (all optional; defaults in parens):
+  --duration N       8 | 12 | 15 | 20                            (12)
+  --model ID         v31 | sr2l | sr2 | sd2f | sd2 | sr20        (sr2l)
+  --aspect RATIO     RATIO_9_16 | RATIO_16_9                     (RATIO_9_16)
+  --resolution RES   720P | 1080P | 4K                           (720P)
 
-Progress (each step, state ticks) goes to stderr.
-Final JSON (scriptJobId, videoJobId, videoUrl, coverImageUrl, userAssetId, script)
-goes to stdout. Exit code: 0 on end-to-end success, 1 on any failure.
+Duration and model must agree; duration/resolution combos have server-side rules —
+run `videos-options` to see `rules.duration_model` and `rules.duration_resolution`
+for the canonical enum.
+
+Progress (step banners, state ticks, credits before/after) → stderr.
+Final JSON (scriptJobId, videoJobId, videoUrl, coverImageUrl, userAssetId,
+creditsSpent, script) → stdout.  Exit 0 on success, 1 on any failure.
 
 Example:
   ./scripts/kaloclip.sh flow https://picsum.photos/id/200/600/600.jpg "Fresh Croissant"
+  ./scripts/kaloclip.sh flow --duration 8 --model v31 --resolution 1080P <url>
+EOF
+}
+
+_help_install() { cat <<'EOF'
+install [target-dir]     default: $HOME/.local/bin
+uninstall [target-dir]
+
+Create a symlink so you can invoke this script as just `kaloclip`. The
+symlink points at the current script's absolute path, so editing the
+script in place stays effective — no copy.
+
+  ./scripts/kaloclip.sh install          # -> ~/.local/bin/kaloclip
+  ./scripts/kaloclip.sh install /usr/local/bin    # needs write access
+  ./scripts/kaloclip.sh uninstall        # remove ~/.local/bin/kaloclip
+
+If the target dir is not in PATH, the output prints a ready-to-paste
+`export PATH=...` line for your shell config.
 EOF
 }
 
@@ -306,14 +332,14 @@ help_topic() {
   case "$t" in
     "") usage ;;
     all)
-      for sub in login credits images-options upload import videos-options videos-queue preview video script job wait flow; do
+      for sub in login install credits images-options upload import videos-options videos-queue preview video script job wait flow; do
         "_help_$sub"; echo
       done ;;
-    login|credits|images-options|upload|import|videos-options|videos-queue|preview|video|script|job|wait|flow)
+    login|install|credits|images-options|upload|import|videos-options|videos-queue|preview|video|script|job|wait|flow)
       "_help_$t" ;;
     *)
       echo "Unknown help topic: $t" >&2
-      echo "Topics: login credits images-options upload import videos-options videos-queue preview video script job wait flow all" >&2
+      echo "Topics: login install credits images-options upload import videos-options videos-queue preview video script job wait flow all" >&2
       exit 2 ;;
   esac
 }
@@ -327,6 +353,37 @@ case "$cmd" in
     [ $# -ge 1 ] || { echo "usage: $0 set-key <api_key>  (or run '$0 login' for guided setup)" >&2; exit 2; }
     KALOCLIP_API_KEY="$1"; save_config
     echo "API key saved to $CONFIG_FILE" ;;
+
+  install)
+    target_dir="${1:-$HOME/.local/bin}"
+    mkdir -p "$target_dir"
+    # Absolute path to this script (POSIX, no realpath/readlink -f dependency).
+    script_path="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+    link="$target_dir/kaloclip"
+    ln -sf "$script_path" "$link"
+    echo "Installed: $link -> $script_path"
+    case ":$PATH:" in
+      *":$target_dir:"*)
+        echo "($target_dir is already in PATH; run 'kaloclip help' to confirm.)"
+        ;;
+      *)
+        echo ""
+        echo "Note: $target_dir is not in PATH. Add this to your shell config:"
+        echo "  export PATH=\"$target_dir:\$PATH\""
+        ;;
+    esac
+    ;;
+
+  uninstall)
+    target_dir="${1:-$HOME/.local/bin}"
+    link="$target_dir/kaloclip"
+    if [ -L "$link" ] || [ -f "$link" ]; then
+      rm -f "$link"
+      echo "Removed: $link"
+    else
+      echo "Not installed at $link (nothing to do)"
+    fi
+    ;;
 
   login)
     # CLI device-flow: generate seed -> open browser to confirm URL -> poll for pickup.
@@ -486,13 +543,27 @@ EOF
 
   flow)
     require_key
-    [ $# -ge 1 ] || { echo "usage: $0 flow <image-url> [product-title]" >&2; exit 2; }
-    flow_url="$1"
-    flow_title="${2:-Test Product}"
+    # Parse optional flags before positionals. Defaults are the 12s/sr2l/720P combo
+    # (known-valid per /videos/options rules; see `help flow` for alternatives).
     flow_duration=12
     flow_model=sr2l
     flow_aspect=RATIO_9_16
     flow_resolution=720P
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --duration)   flow_duration="$2"; shift 2 ;;
+        --model)      flow_model="$2"; shift 2 ;;
+        --aspect)     flow_aspect="$2"; shift 2 ;;
+        --resolution) flow_resolution="$2"; shift 2 ;;
+        --help|-h)    _help_flow; exit 0 ;;
+        --)           shift; break ;;
+        -*)           echo "Unknown flag: $1 (see 'help flow')" >&2; exit 2 ;;
+        *)            break ;;
+      esac
+    done
+    [ $# -ge 1 ] || { echo "usage: $0 flow [--duration N] [--model ID] [--aspect RATIO] [--resolution RES] <image-url> [product-title]" >&2; exit 2; }
+    flow_url="$1"
+    flow_title="${2:-Test Product}"
     check_ok() {
       local resp="$1" step="$2"
       [ "$(printf '%s' "$resp" | jq -r '.success')" = "true" ] && return 0
