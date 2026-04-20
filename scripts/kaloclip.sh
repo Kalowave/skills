@@ -3,7 +3,8 @@
 set -euo pipefail
 
 BASE="https://clip.kalowave.com/api/open/v1"
-CONFIG_DIR="$HOME/.kaloclip"
+# Home dir. Override with KALOCLIP_HOME (mirrors the HERMES_HOME / VIRTUAL_ENV pattern).
+CONFIG_DIR="${KALOCLIP_HOME:-$HOME/.kaloclip}"
 CONFIG_FILE="$CONFIG_DIR/config.env"
 LEGACY_CONFIG_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/kaloclip/config.env"
 
@@ -66,7 +67,7 @@ ACTION
   flow <image-url> [title]     end-to-end: import → script → video → videoUrl
 
 All responses wrapped: { success, code, message, data, cached }.  Check .success first.
-Env: KALOCLIP_API_KEY overrides saved file.
+Env: KALOCLIP_API_KEY overrides saved file.  KALOCLIP_HOME overrides ~/.kaloclip.
 Use  `help <topic>`  for request-body and response schemas.
 EOF
 }
