@@ -49,8 +49,8 @@ kaloclip - KaloClip Open API CLI
 USAGE
   kaloclip.sh <command> [args...]
   kaloclip.sh help [topic]
-      topics: login | install | credits | images-options | upload | import |
-              videos-options | videos-queue | preview | video |
+      topics: login | install | credits | images-options | resolve | upload |
+              import | videos-options | videos-queue | preview | video |
               script | job | wait | all
 
 CONFIG (interactive one-off setup; not meant to run from an agent loop)
@@ -68,12 +68,13 @@ QUERY
   videos-queue                 { pending, processing, estimatedWaitSeconds }
   job <jobId>                  poll job status (also /videos/{jobId})
 
-ACTION
-  upload <file>...             POST /images   (multipart, 1-6 files, 5MB each)
-  import <url>...              POST /images/import   (1-6 HTTPS URLs)
-  script                       POST /scripts  async, 2 credits   (JSON on stdin)
-  preview                      POST /videos/preview  credit cost   (JSON on stdin)
-  video                        POST /videos   credits deducted    (JSON on stdin)
+ACTION  (preferred entry point: resolve — handles title/category/points/images in one call)
+  resolve <product-link>       POST /products/resolve   TikTok / Kalodata URL → full body
+  upload <file>...             POST /images             multipart, 1-6 files, 5MB each
+  import <url>...              POST /images/import      1-6 HTTPS URLs (manual images only)
+  script                       POST /scripts            async, 2 credits   (JSON on stdin)
+  preview                      POST /videos/preview     credit cost       (JSON on stdin)
+  video                        POST /videos             credits deducted  (JSON on stdin)
   wait <jobId> [interval_s]    poll until COMPLETED/FAILED (default 5s)
 
 All responses wrapped: { success, code, message, data, cached }.  Check .success first.
@@ -105,10 +106,55 @@ Response (.data):
 EOF
 }
 
+_help_resolve() { cat <<'EOF'
+resolve <product-link> - POST /products/resolve                    rate: 10/min
+
+Preferred entry point when the user has a product link — this ONE call parses
+the URL, fetches product detail, imports product images into the user's asset
+library, and looks up selling points. Everything a /scripts or /videos body
+needs shows up in the response under matching field names, ready to splice.
+
+Accepted link formats:
+  - TikTok shop product page        https://shop.tiktok.com/view/product/{id}
+  - TikTok shop short URL           https://vt.tiktok.com/... or ...tiktok.com/t/...
+  - Kalodata product detail page    https://kalodata.com/product/detail?id=...
+
+Request: positional arg wrapped as  {"productLink": "<arg>"}
+No credit cost.
+
+Response (.data):
+  productId        string
+  country          string     e.g. "US"
+  language         string?    "en" / "zh" / ... (null if link had none)
+  productTitle     string
+  categoryNames    string[]   pri / sec / ter category names, 1-3 items
+  sellingPoints    string[]   may be empty if backend hasn't analysed yet
+  imageInfos       array of  {assetId, imageUrl, description?}
+                              already persisted to the user's asset library
+
+Drop-in composition example (URL → script → video, each step independently
+retriable, no /flow endpoint needed):
+
+  R=$(./scripts/kaloclip.sh resolve "$PRODUCT_URL")
+  printf '%s' "$R" | jq '.data + {
+        duration: 12, internalModelId: "sr2l"
+      }' \
+    | ./scripts/kaloclip.sh script \
+    | jq -r '.data'                           # scriptJobId
+
+  ./scripts/kaloclip.sh wait <scriptJobId> \
+    | jq '.data.output.script'                # then glue into video body
+EOF
+}
+
 _help_upload() { cat <<'EOF'
 upload <file>... - POST /images                                   rate: 10/min
 
 Multipart part `images` (file[]), 1-6 files, 5MB each, JPEG/PNG/GIF/WebP.
+
+Use this ONLY when the user doesn't have a product link and is bringing their
+own images. If they have a product URL, prefer `resolve` — it imports product
+images automatically and gives you title + category + selling points too.
 
 Response (.data): array of
   assetId      number    asset id, use in imageInfos[].assetId
@@ -122,6 +168,8 @@ _help_import() { cat <<'EOF'
 import <url>... - POST /images/import                             rate: 10/min
 
 Body: JSON array of HTTPS URLs. Same constraints/response as `upload`.
+Use ONLY for images hosted elsewhere that aren't tied to a product link — for
+a product link, `resolve` already imports the product's images for you.
 EOF
 }
 
@@ -341,14 +389,14 @@ help_topic() {
   case "$t" in
     "") usage ;;
     all)
-      for sub in login install credits images-options upload import videos-options videos-queue preview video script job wait; do
+      for sub in login install credits images-options resolve upload import videos-options videos-queue preview video script job wait; do
         "_help_$sub"; echo
       done ;;
-    login|install|credits|images-options|upload|import|videos-options|videos-queue|preview|video|script|job|wait)
+    login|install|credits|images-options|resolve|upload|import|videos-options|videos-queue|preview|video|script|job|wait)
       "_help_$t" ;;
     *)
       echo "Unknown help topic: $t" >&2
-      echo "Topics: login install credits images-options upload import videos-options videos-queue preview video script job wait all" >&2
+      echo "Topics: login install credits images-options resolve upload import videos-options videos-queue preview video script job wait all" >&2
       exit 2 ;;
   esac
 }
@@ -501,6 +549,12 @@ EOF
     [ $# -ge 1 ] || { echo "usage: $0 import <url> [url...]" >&2; exit 2; }
     body=$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1:]))' "$@")
     api -X POST "$BASE/images/import" -H "Content-Type: application/json" -d "$body" ;;
+
+  resolve)
+    require_key
+    [ $# -ge 1 ] || { echo "usage: $0 resolve <product-link>" >&2; exit 2; }
+    body=$(jq -nc --arg link "$1" '{productLink: $link}')
+    api -X POST "$BASE/products/resolve" -H "Content-Type: application/json" -d "$body" ;;
 
   script|preview|video)
     require_key
